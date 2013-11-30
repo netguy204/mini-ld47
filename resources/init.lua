@@ -5,34 +5,244 @@ local constant = require 'constant'
 
 local Timer = require 'Timer'
 local Rect = require 'Rect'
+local DynO = require 'DynO'
 
 local czor = game:create_object('Compositor')
+local screen_rect = Rect(camera:viewport())
+local screen_width = screen_rect:width()
+local screen_height = screen_rect:height()
 
-function background()
-   czor:clear_with_color(util.rgba(255,255,255,255))
-end
+local terrain
+local player
+local explosions
 
-function solid_mesh(points, color)
-   local mesh = game:create_object('Mesh')
+function solid_mesh(points, color, mesh)
+   if mesh then
+      mesh:clear()
+   else
+      mesh = game:create_object('Mesh')
+   end
+
    for ii = 1,#points,2 do
-      print(string.format('%d %d', points[ii], points[ii+1]))
       mesh:add_point({points[ii], points[ii+1]}, color)
    end
    return mesh
 end
 
+function extend(tbl, pts)
+   for ii = 1,#pts do
+      table.insert(tbl, pts[ii])
+   end
+   return tbl
+end
+
+PSManager = oo.class(oo.Object)
+function PSManager:init(n, ctor)
+   self.n = n
+   self.systems = {}
+   for i = 1,n do
+      table.insert(self.systems, ctor())
+   end
+end
+
+function PSManager:activate(...)
+   local psys = table.remove(self.systems, 1)
+   psys:activate(...)
+   table.insert(self.systems, psys)
+   return psys
+end
+
+Explosion = oo.class(oo.Object)
+function Explosion:init(lifetime)
+   self.lifetime = lifetime
+
+   local _smoke = game:atlas_entry(constant.ATLAS, 'steam')
+   local params =
+      {def=
+          {n=50,
+           renderer={name='PSC_E2SystemRenderer',
+                     params={entry=_smoke}},
+           activator={name='PSConstantRateActivator',
+                      params={rate=0}},
+           components={
+              {name='PSConstantAccelerationUpdater',
+               params={acc={0,0}}},
+              {name='PSTimeAlphaUpdater',
+               params={time_constant=0.4,
+                       max_scale=1.0}},
+              {name='PSFireColorUpdater',
+               params={max_life=0.3,
+                       start_temperature=9000,
+                       end_temperature=500}},
+              {name='PSBoxInitializer',
+               params={initial={-16,-34,16,-30},
+                       refresh={-16,-34,16,-30},
+                       minv={0,0},
+                       maxv={0,0}}},
+              {name='PSTimeInitializer',
+               params={min_life=0.2,
+                       max_life=0.4}},
+              {name='PSTimeTerminator'}}}}
+
+   local system = stage:add_component('CParticleSystem', params)
+   local activator = system:def():find_component('PSConstantRateActivator')
+   local psbox = system:def():find_component('PSBoxInitializer')
+
+   self.activator = activator
+   self.psbox = psbox
+   self.timer = Timer()
+end
+
+function Explosion:activate(center, w, h, speed)
+   local rect = {center[1] - w/2, center[2] - h/2, center[1] + w/2, center[2] + h/2}
+   self.psbox:initial(rect)
+   self.psbox:refresh(rect)
+   self.psbox:minv({-speed, -speed})
+   self.psbox:maxv({speed, speed})
+   self.activator:rate(1000)
+   local term = function()
+      self.activator:rate(0)
+   end
+   self.timer:reset(self.lifetime, term)
+end
+
+ExplosionManager = oo.class(PSManager)
+function ExplosionManager:init(n)
+   local ctor = function()
+      return Explosion(0.2)
+   end
+
+   PSManager.init(self, n, ctor)
+end
+
+local Terrain = oo.class(DynO)
+function Terrain:init(var, steps)
+   DynO.init(self, {0,0})
+   local go = self:go()
+   go:body_type(constant.STATIC)
+
+   self.var = var
+   self.steps = steps
+   self.coll = {}
+
+   local surf = self:generate(var, steps)
+   self.comp = go:add_component('CMesh', {mesh=surf.mesh})
+   self:update_colliders(surf.surfaces)
+   self.mesh = surf.mesh
+   self.lasty = surf.lasty
+end
+
+function Terrain:reset()
+   local surf = self:generate(self.var, self.steps, self.mesh, self.lasty)
+   self.lasty = self.lasty
+   self:update_colliders(surf.surfaces)
+end
+
+function Terrain:update_colliders(surfaces)
+   local go = self:go()
+
+   -- remove old colliders
+   for ii = 1,#self.coll do
+      self.coll[ii]:delete_me(1)
+   end
+   self.coll = {}
+
+   -- add new colliders
+   for ii = 1,#surfaces do
+      local surface = surfaces[ii]
+      table.insert(self.coll, go:add_component('CSensor', ({fixture={type='poly', points=surfaces[ii]}})))
+   end
+end
+
+function Terrain:generate(var, steps, mesh, lasty)
+   local dx = screen_width / steps
+   local lastx = 0
+   local lasty = lasty or screen_height / 3
+
+   local mpoints = {}
+   local surfaces = {}
+
+   for ii = 1,steps do
+      local x = dx * ii
+      local y = lasty + world:random_gaussian() * var
+      y = math.min(screen_height*2/3, math.max(screen_height/6, y))
+
+      extend(mpoints, {x,y,  lastx,lasty,  lastx,0,
+                       x,y,  lastx,0,      x,0})
+
+      local surface = {{x,y}, {lastx,lasty}, {lastx,0}, {x,0}}
+      table.insert(surfaces, surface)
+
+      lasty = y
+      lastx = x
+   end
+
+   return {mesh = solid_mesh(mpoints, {0,1,0,1}, mesh),
+           surfaces = surfaces,
+           lasty = lasty}
+end
+
+local Bomb = oo.class(DynO)
+function Bomb:init(pos, vel)
+   DynO.init(self, pos)
+   local go = self:go()
+   go:vel(vel)
+   go:fixed_rotation(0)
+
+   self.sprite = go:add_component('CTestDisplay', {w=16,h=16,color={1,0,0,1}})
+   self:add_collider({fixture={type='rect', w=16, h=16}})
+end
+
+function Bomb:started_colliding_with(other)
+   local go = self:go()
+   if go then
+      explosions:activate(go:pos(), 16, 16, 30)
+      self:terminate()
+   end
+end
+
+local Player = oo.class(DynO)
+function Player:init()
+   self.initial_height = screen_height*3/4
+   DynO.init(self, {0,self.initial_height})
+   local go = self:go()
+
+   go:body_type(constant.KINEMATIC)
+   self.sprite = go:add_component('CTestDisplay', {w=64,h=64/3,
+                                                     color={0,0,1,1}})
+   self.bomb_trigger = util.rising_edge_trigger(false)
+   go:vel({100,0})
+end
+
+function Player:update()
+   local go = self:go()
+   local pos = go:pos()
+
+   if pos[1] > screen_width then
+      -- reset terrain and position
+      terrain:reset()
+      DynO.terminate_all(Bomb)
+      go:pos({0,self.initial_height})
+   end
+
+   local input = util.input_state()
+   if self.bomb_trigger(input.action1) then
+      Bomb(pos, go:vel())
+   end
+end
+
+function background()
+   czor:clear_with_color(util.rgba(0,0,15,255))
+end
+
 function game_init()
    util.install_basic_keymap()
-   world:gravity({0,0})
+   world:gravity({0,-45})
 
    local cam = stage:find_component('Camera', nil)
    cam:pre_render(util.fthread(background))
 
-   local obj = world:create_go()
-   local screen_rect = Rect(camera:viewport())
-   obj:pos({screen_rect:width()/2, screen_rect:height()/2})
-   --obj:add_component('CTestDisplay', {w=128,h=128})
-
-   local mesh = solid_mesh({100, -100,  0, 100,  -100, -100}, {1,1,0,1})
-   obj:add_component('CMesh', {mesh=mesh, layer=constant.PLAYER})
+   terrain = Terrain(50, 20)
+   player = Player()
+   explosions = ExplosionManager(5)
 end
