@@ -271,7 +271,7 @@ function Player:init()
 
    go:body_type(constant.KINEMATIC)
    self.sprite = go:add_component('CTestDisplay', {w=64,h=64/3,
-                                                     color={0,0,1,1}})
+                                                     color={1,1,1,1}})
    self.bomb_trigger = util.rising_edge_trigger(false)
    go:vel({100,0})
 end
