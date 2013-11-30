@@ -115,6 +115,34 @@ function ExplosionManager:init(n)
    PSManager.init(self, n, ctor)
 end
 
+local Building = oo.class(DynO)
+function Building:init(building)
+   local v1 = vector.new(building[1])
+   local v2 = vector.new(building[2])
+   local width = (v1 - v2):length()
+   local height = util.rand_between(32,128)
+
+   local center = vector.new({0,height/2}) + (v1 + v2) *.5
+
+   DynO.init(self, center)
+
+   local go = self:go()
+   go:fixed_rotation(0)
+
+   go:add_component('CTestDisplay', {w=width, h=height})
+   self:add_collider({fixture={type='rect', w=width, h=height}})
+   self.width = width
+   self.height = height
+end
+
+function Building:bombed()
+   local go = self:go()
+   if go then
+      explosions:activate(go:pos(), self.width, self.height, 200)
+      self:terminate()
+   end
+end
+
 local Terrain = oo.class(DynO)
 function Terrain:init(var, steps)
    DynO.init(self, {0,0})
@@ -125,17 +153,29 @@ function Terrain:init(var, steps)
    self.steps = steps
    self.coll = {}
 
+   local wlevel = screen_height*1/4
+   self.wlevel = wlevel
+
    local surf = self:generate(var, steps)
    self.comp = go:add_component('CMesh', {mesh=surf.mesh})
    self:update_colliders(surf.surfaces)
+   self.b = self:building(surf.building)
    self.mesh = surf.mesh
    self.lasty = surf.lasty
+
+   local water = solid_mesh({screen_width,wlevel,  0,wlevel,  0,0,
+                             0,0,  screen_width,0,  screen_width, wlevel}, {0,0,.7,1})
+   self.water = go:add_component('CMesh', {mesh=water, layer=constant.BACKGROUND})
 end
 
 function Terrain:reset()
    local surf = self:generate(self.var, self.steps, self.mesh, self.lasty)
-   self.lasty = self.lasty
+   self.lasty = surf.lasty
    self:update_colliders(surf.surfaces)
+   if self.b then
+      self.b:terminate()
+   end
+   self.b = self:building(surf.building)
 end
 
 function Terrain:update_colliders(surfaces)
@@ -154,6 +194,10 @@ function Terrain:update_colliders(surfaces)
    end
 end
 
+function Terrain:building(building)
+   return Building(building)
+end
+
 function Terrain:generate(var, steps, mesh, lasty)
    local dx = screen_width / steps
    local lastx = 0
@@ -161,11 +205,24 @@ function Terrain:generate(var, steps, mesh, lasty)
 
    local mpoints = {}
    local surfaces = {}
+   local nbuilding = math.floor(util.rand_between(steps*4/9,steps*9/10)) + 1
+   local building
 
    for ii = 1,steps do
       local x = dx * ii
       local y = lasty + world:random_gaussian() * var
       y = math.min(screen_height*2/3, math.max(screen_height/6, y))
+      if nbuilding == ii then
+         -- place our building if above water
+         if lasty > self.wlevel then
+            y = lasty
+            building = {{lastx,lasty},  {x,y}}
+         else
+            -- raise the land level artificially
+            y = self.wlevel + 10
+            nbuilding = nbuilding + 1
+         end
+      end
 
       extend(mpoints, {x,y,  lastx,lasty,  lastx,0,
                        x,y,  lastx,0,      x,0})
@@ -179,7 +236,8 @@ function Terrain:generate(var, steps, mesh, lasty)
 
    return {mesh = solid_mesh(mpoints, {0,1,0,1}, mesh),
            surfaces = surfaces,
-           lasty = lasty}
+           lasty = lasty,
+           building = building}
 end
 
 local Bomb = oo.class(DynO)
@@ -194,6 +252,10 @@ function Bomb:init(pos, vel)
 end
 
 function Bomb:started_colliding_with(other)
+   if other:is_a(Building) then
+      other:bombed()
+   end
+
    local go = self:go()
    if go then
       explosions:activate(go:pos(), 16, 16, 30)
@@ -203,7 +265,7 @@ end
 
 local Player = oo.class(DynO)
 function Player:init()
-   self.initial_height = screen_height*3/4
+   self.initial_height = screen_height*9/10
    DynO.init(self, {0,self.initial_height})
    local go = self:go()
 
