@@ -46,6 +46,41 @@ function extend(tbl, pts)
    return tbl
 end
 
+function background_stars(go)
+   local _art = game:atlas_entry(constant.ATLAS, 'star1')
+   local m = 3
+   local params =
+      {def=
+          {n=200,
+           layer=constant.BACKDROP,
+           renderer={name='PSC_E2SystemRenderer',
+                     params={entry=_art}},
+           components={
+              {name='PSConstantAccelerationUpdater',
+               params={acc={0, 0}}},
+              {name='PSBoxInitializer',
+               params={initial={-_art.w, -_art.h,
+                                screen_width + _art.w,
+                                screen_height * m + _art.h},
+                       refresh={screen_width + _art.w, - _art.h,
+                                screen_width + _art.w, screen_height * m + _art.h},
+                       minv={-1, 0},
+                       maxv={-0.1, 0}}},
+              {name='PSRandColorInitializer',
+               params={min_color={0.8, 0.8, 0.8, 0.2},
+                       max_color={1.0, 1.0, 1.0, 1.0}}},
+              {name='PSRandScaleInitializer',
+               params={min_scale=0.5,
+                       max_scale=1.5}},
+              {name='PSBoxTerminator',
+               params={rect={-_art.w*2, -_art.h*2,
+                             screen_width + _art.w * 2,
+                             screen_height * m + _art.h * 2}}}}}}
+   return go:add_component('CParticleSystem', params)
+end
+
+
+
 PSManager = oo.class(oo.Object)
 function PSManager:init(n, ctor)
    self.n = n
@@ -60,6 +95,57 @@ function PSManager:activate(...)
    psys:activate(...)
    table.insert(self.systems, psys)
    return psys
+end
+
+Thruster = oo.class(oo.Object)
+function Thruster:init(go, offset, spd)
+   self.go = go
+   self.spd = spd
+   self.offset = offset
+
+   local _smoke = game:atlas_entry(constant.ATLAS, 'steam')
+   local params =
+      {def=
+          {n=50,
+           renderer={name='PSC_E2SystemRenderer',
+                     params={entry=_smoke}},
+           activator={name='PSConstantRateActivator',
+                      params={rate=100}},
+           components={
+              {name='PSConstantAccelerationUpdater',
+               params={acc={0,0}}},
+              {name='PSTimeAlphaUpdater',
+               params={time_constant=0.4,
+                       max_scale=1.0}},
+              {name='PSFireColorUpdater',
+               params={max_life=0.8,
+                       start_temperature=6000,
+                       end_temperature=2000}},
+              {name='PSBoxInitializer',
+               params={initial={offset[1],offset[2],offset[1],offset[2]},
+                       refresh={offset[1],offset[2],offset[1],offset[2]},
+                       minv={-10,-10},
+                       maxv={10,10}}},
+              {name='PSTimeInitializer',
+               params={min_life=0.4,
+                       max_life=0.8}},
+              {name='PSTimeTerminator'}}}}
+
+   local system = go:add_component('CParticleSystem', params)
+   local psbox = system:def():find_component('PSBoxInitializer')
+
+   self.psbox = psbox
+   self.timer = Timer()
+   self:update()
+end
+
+function Thruster:update()
+   -- update dirction
+   local dir = vector.new_from_angle(self.go:angle())
+   local off = dir * self.offset[1]
+   self.psbox:refresh({off[1], off[2], off[1], off[2]})
+
+   self.timer:reset(.1, self:bind('update'))
 end
 
 Explosion = oo.class(oo.Object)
@@ -278,6 +364,7 @@ function Terrain:init(var, steps)
    local water = solid_mesh({screen_width,wlevel,  0,wlevel,  0,0,
                              0,0,  screen_width,0,  screen_width, wlevel}, {0,0,.7,1})
    self.water = go:add_component('CMesh', {mesh=water, layer=constant.BACKGROUND})
+   self.stars = background_stars(go)
 end
 
 function Terrain:reset()
@@ -360,7 +447,7 @@ function Bomb:init(pos, vel)
    go:fixed_rotation(0)
 
    self.sprite = go:add_component('CTestDisplay', {w=16,h=16,color={1,0,0,1}})
-   self:add_collider({fixture={type='rect', w=16, h=16, mask=1}})
+   self:add_collider({fixture={type='rect', w=16, h=16, category=3, mask=1}})
 end
 
 function Bomb:started_colliding_with(other)
@@ -393,7 +480,9 @@ function Player:init()
    self.bomb_trigger = util.rising_edge_trigger(false)
    go:vel({100,0})
    self.min_speed = 70
-   self.max_speed = 200
+   self.max_speed = 300
+
+   Thruster(go, {-w/2,0}, self.min_speed)
 end
 
 function Player:update()
@@ -403,6 +492,7 @@ function Player:update()
 
    -- set rotation
    local angle = go:angle()
+   local spd = vel:length()
    self.tform:rotation(angle)
 
    -- compute lift
@@ -413,24 +503,16 @@ function Player:update()
    local lift = lift_dir * vahead * screen_height/pos[2] * 0.10
    go:apply_force(lift)
 
-   -- thrust
+   -- thrust decreases with height
    if vahead < self.max_speed then
-      go:apply_force(ahead * (self.max_speed - vahead) * 0.8)
+      go:apply_force(ahead * (self.max_speed - vahead) * screen_height/pos[2] * .5)
    end
 
-   -- drag. increases as total force due to air pressure increases
-   local drag_factor = .1 + 0.6 * (math.abs(vel:dot(lift_dir)) / vel:length())
+   -- drag. increases as total force due to air pressure
+   -- increases. decreases as you go up
+   local drag_factor = .1 * (screen_height / pos[2]) + .9 * (math.abs(vel:dot(lift_dir)) / vel:length())
    local drag = vel * -drag_factor
    go:apply_force(drag)
-
-   if pos[1] > screen_width then
-      -- reset terrain and position
-      DynO.terminate_all(Bomb)
-      DynO.terminate_all(BuildingPiece)
-      DynO.terminate_all(Building)
-      terrain:reset()
-      go:pos({0,pos[2]})
-   end
 
    local input = util.input_state()
    if self.bomb_trigger(input.action1) then
@@ -440,6 +522,29 @@ function Player:update()
    if math.abs(input.leftright) > 0.1 then
       go:angle_rate(0)
       go:angle(angle - input.leftright * world:dt())
+   end
+
+   -- make sure that the player is on the screen and near the top
+   local miny = math.max(0, pos[2] - screen_height*7/8)
+   local maxy = miny + screen_height
+   camera:world2camera():orthographic_proj(0, screen_width, miny, maxy, -1, 1)
+
+   -- reset if we go off the screen
+   local reset = false
+   if pos[1] > screen_width then
+      -- reset terrain and position
+      reset = true
+      go:pos({0,pos[2]})
+   elseif pos[1] < 0 then
+      reset = true
+      go:pos({screen_width,pos[2]})
+   end
+
+   if reset then
+      DynO.terminate_all(Bomb)
+      DynO.terminate_all(BuildingPiece)
+      DynO.terminate_all(Building)
+      terrain:reset()
    end
 end
 
