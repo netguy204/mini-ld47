@@ -7,6 +7,16 @@ local Timer = require 'Timer'
 local Rect = require 'Rect'
 local DynO = require 'DynO'
 
+local PSManager
+local Explosion
+local ExplosionManager
+local Building
+local BuildingPiece
+local Terrain
+local Bomb
+local Player
+local Engine
+
 local czor = game:create_object('Compositor')
 local screen_rect = Rect(camera:viewport())
 local screen_width = screen_rect:width()
@@ -115,7 +125,7 @@ function ExplosionManager:init(n)
    PSManager.init(self, n, ctor)
 end
 
-local Building = oo.class(DynO)
+Building = oo.class(DynO)
 function Building:init(building)
    local v1 = vector.new(building[1])
    local v2 = vector.new(building[2])
@@ -129,21 +139,123 @@ function Building:init(building)
    local go = self:go()
    go:fixed_rotation(0)
 
-   go:add_component('CTestDisplay', {w=width, h=height})
+   self.sprite = go:add_component('CTestDisplay', {w=width, h=height})
    self:add_collider({fixture={type='rect', w=width, h=height}})
    self.width = width
    self.height = height
 end
 
+function fracture_tris(c, w, h, fractures)
+   local tris = {}
+   c = vector.new(c)
+   local bl = c - w/2 - h/2
+
+   for ii = 1,#fractures,6 do
+      local p1 = bl + w * fractures[ii]   + h * fractures[ii+1]
+      local p2 = bl + w * fractures[ii+2] + h * fractures[ii+3]
+      local p3 = bl + w * fractures[ii+4] + h * fractures[ii+5]
+      table.insert(tris, {p1, p2, p3})
+   end
+   return tris
+end
+
+local fracture_types = {
+   { 1,1, 0,1, 0,0,  1,1, 0,0, 1,0 },
+   { 0,1, 0,0, .5,1,  .5,1, 0,0, 1,0,  .5,1, 1,0, 1,1 }
+}
+
 function Building:bombed()
    local go = self:go()
    if go then
+      -- spawn pieces and remove ourselves
+      local v1 = vector.new({self.width, 0})
+      local v2 = vector.new({0, self.height})
+      local tris = fracture_tris(go:pos(), v1, v2, util.rand_choice(fracture_types))
+      for ii = 1,#tris do
+         BuildingPiece({tris[ii]})
+      end
+
       explosions:activate(go:pos(), self.width, self.height, 200)
       self:terminate()
    end
 end
 
-local Terrain = oo.class(DynO)
+local Tri = oo.class(oo.class)
+function Tri:init(a, b, c)
+   if #a == 3 then
+      -- given an array or tri
+      b = a[2]
+      c = a[3]
+      a = a[1]
+   end
+   self[1] = vector.new(a)
+   self[2] = vector.new(b)
+   self[3] = vector.new(c)
+end
+
+function Tri:center()
+   return (self[1] + self[2] + self[3]) / 3
+end
+
+function Tri:__add(v)
+   return Tri(self[1] + v, self[2] + v, self[3] + v)
+end
+
+function Tri:__sub(v)
+   return Tri(self[1] - v, self[2] - v, self[3] - v)
+end
+
+BuildingPiece = oo.class(DynO)
+function BuildingPiece:init(tris)
+   local c = vector.new({0,0})
+   for ii=1,#tris do
+      tris[ii] = Tri(tris[ii])
+      c = c + tris[ii]:center()
+   end
+   c = c / #tris
+
+   -- recenter the triangles and pack for mesh
+   local points = {}
+   for ii=1,#tris do
+      tris[ii] = tris[ii] - c
+      extend(points, tris[ii][1])
+      extend(points, tris[ii][2])
+      extend(points, tris[ii][3])
+   end
+
+   DynO.init(self, c)
+
+   local go = self:go()
+   go:vel(util.rand_vector(10,100))
+   go:fixed_rotation(0)
+
+   -- visual
+   local mesh = solid_mesh(points, {1,0,1,1})
+   self.mesh = go:add_component('CMesh', {mesh=mesh})
+   self.tform = game:create_object('Matrix44')
+   self.tform:identity()
+   self.mesh:tform(self.tform)
+
+   -- add colliders
+   for ii=1,#tris do
+      go:add_component('CSensor', {fixture={type='poly', points=tris[ii],
+                                            density=1, friction=0.8}})
+   end
+
+   local timeout = function()
+      self:terminate()
+   end
+   Timer(go):reset(10, timeout)
+end
+
+function BuildingPiece:update()
+   local go = self:go()
+   if go then
+      self.tform:rotation(go:angle())
+   end
+end
+
+Terrain = oo.class(DynO)
 function Terrain:init(var, steps)
    DynO.init(self, {0,0})
    local go = self:go()
@@ -240,7 +352,7 @@ function Terrain:generate(var, steps, mesh, lasty)
            building = building}
 end
 
-local Bomb = oo.class(DynO)
+Bomb = oo.class(DynO)
 function Bomb:init(pos, vel)
    DynO.init(self, pos)
    local go = self:go()
@@ -248,7 +360,7 @@ function Bomb:init(pos, vel)
    go:fixed_rotation(0)
 
    self.sprite = go:add_component('CTestDisplay', {w=16,h=16,color={1,0,0,1}})
-   self:add_collider({fixture={type='rect', w=16, h=16}})
+   self:add_collider({fixture={type='rect', w=16, h=16, mask=1}})
 end
 
 function Bomb:started_colliding_with(other)
@@ -263,33 +375,71 @@ function Bomb:started_colliding_with(other)
    end
 end
 
-local Player = oo.class(DynO)
+Player = oo.class(DynO)
 function Player:init()
    self.initial_height = screen_height*9/10
    DynO.init(self, {0,self.initial_height})
    local go = self:go()
+   go:fixed_rotation(0)
 
-   go:body_type(constant.KINEMATIC)
-   self.sprite = go:add_component('CTestDisplay', {w=64,h=64/3,
-                                                     color={1,1,1,1}})
+   local w = 64
+   local h = w/3
+   local points = {-w/2,h/2, -w/2,-h/2, w/2,h/2,  w/2,h/2, -w/2,-h/2, w/2,-h/2}
+   self.tform = game:create_object('Matrix44')
+   self.tform:identity()
+   self.mesh = go:add_component('CMesh', {mesh=solid_mesh(points,{1,1,1,1}), tform=self.tform})
+   self.coll = go:add_component('CSensor', {fixture={type='rect', w=w, h=h, density=2,
+                                                     category=2}})
    self.bomb_trigger = util.rising_edge_trigger(false)
    go:vel({100,0})
+   self.min_speed = 70
+   self.max_speed = 200
 end
 
 function Player:update()
    local go = self:go()
-   local pos = go:pos()
+   local pos = vector.new(go:pos())
+   local vel = vector.new(go:vel())
+
+   -- set rotation
+   local angle = go:angle()
+   self.tform:rotation(angle)
+
+   -- compute lift
+   local ahead = vector.new_from_angle(angle)
+   local vahead = math.abs(vel:dot(ahead))
+   local lift_angle = angle + math.pi/2
+   local lift_dir = vector.new_from_angle(lift_angle)
+   local lift = lift_dir * vahead * screen_height/pos[2] * 0.10
+   go:apply_force(lift)
+
+   -- thrust
+   if vahead < self.max_speed then
+      go:apply_force(ahead * (self.max_speed - vahead) * 0.8)
+   end
+
+   -- drag. increases as total force due to air pressure increases
+   local drag_factor = .1 + 0.6 * (math.abs(vel:dot(lift_dir)) / vel:length())
+   local drag = vel * -drag_factor
+   go:apply_force(drag)
 
    if pos[1] > screen_width then
       -- reset terrain and position
-      terrain:reset()
       DynO.terminate_all(Bomb)
-      go:pos({0,self.initial_height})
+      DynO.terminate_all(BuildingPiece)
+      DynO.terminate_all(Building)
+      terrain:reset()
+      go:pos({0,pos[2]})
    end
 
    local input = util.input_state()
    if self.bomb_trigger(input.action1) then
       Bomb(pos, go:vel())
+   end
+
+   if math.abs(input.leftright) > 0.1 then
+      go:angle_rate(0)
+      go:angle(angle - input.leftright * world:dt())
    end
 end
 
