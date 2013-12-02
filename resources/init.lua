@@ -6,6 +6,9 @@ local constant = require 'constant'
 local Timer = require 'Timer'
 local Rect = require 'Rect'
 local DynO = require 'DynO'
+local Indicator = require 'Indicator'
+
+local main_font = require 'dejavu_font'
 
 local PSManager
 local Explosion
@@ -16,6 +19,8 @@ local Terrain
 local Bomb
 local Player
 local Engine
+local Score
+local Menu
 
 local czor = game:create_object('Compositor')
 local screen_rect = Rect(camera:viewport())
@@ -25,6 +30,23 @@ local screen_height = screen_rect:height()
 local terrain
 local player
 local explosions
+local score
+local max_attempts = 5
+
+local sfx = {}
+
+function load_sfx(kind, names)
+   sfx[kind] = {}
+   for ii, name in ipairs(names) do
+      table.insert(sfx[kind], game:get_sound(name, 1.0))
+   end
+end
+
+function play_sfx(kind)
+   local snd = util.rand_choice(sfx[kind])
+   game:play_sound(snd, 1)
+end
+
 
 function solid_mesh(points, color, mesh)
    if mesh then
@@ -79,7 +101,94 @@ function background_stars(go)
    return go:add_component('CParticleSystem', params)
 end
 
+Score = oo.class(oo.Object)
+function Score:init()
+   self.world = game:create_world()
+   self.go = self.world:create_go()
+   self.indicator = Indicator(main_font(1), {screen_width/2, screen_height - 20}, {1,1,1,1}, self.go)
+   self:reset()
+end
 
+function Score:reset()
+   self.attempts = 1
+   self.hits = 0
+   self:update()
+end
+
+function Score:update(da, dh)
+   da = da or 0
+   dh = dh or 0
+   self.attempts = self.attempts + da
+   self.hits = self.hits + dh
+   self.indicator:update('%d/%d KILLS', self.hits, self.attempts)
+end
+
+Menu = oo.class(oo.Object)
+function Menu:init(font, options)
+   local world = game:create_world()
+   local go = world:create_go()
+   local indicators = {}
+
+   local y = screen_height / 2 + font:line_height() * #options / 2
+   local x = screen_width / 2
+   for ii = 1,#options do
+      local choice = Indicator(font, {x, y}, {0,0,0,0}, go)
+      choice:update(options[ii][1])
+      table.insert(indicators, choice)
+      y = y - font:line_height()
+   end
+
+   self.world = world
+   self.go = go
+   self.indicators = indicators
+   self.state = 1
+   self.options = options
+   self.up = util.rising_edge_trigger(false)
+   self.down = util.rising_edge_trigger(false)
+   self.select = util.falling_edge_trigger(false)
+   go:add_component('CScripted', {update_thread=util.fthread(self:bind('update'))})
+end
+
+function Menu:update()
+   local input = util.input_state()
+   local options = self.options
+   local state = self.state
+   local fire = false
+
+   if self.up(input.updown > 0.1 or input.leftright < -0.1) then
+      state = state - 1
+      if state <= 0 then
+         state = #options
+      end
+   elseif self.down(input.updown < -0.1 or input.leftright > 0.1) then
+      state = state + 1
+      if state > #options then
+         state = 1
+      end
+   elseif self.select(input.action2) then
+      fire = true
+   end
+
+   for ii = 1, #options do
+      if ii == state then
+         self.indicators[ii]:color({1,1,1,1})
+      else
+         local c = .4
+         self.indicators[ii]:color({c,c,c,c})
+      end
+   end
+
+   if fire then
+      local option = self.options[state]
+      option[2]()
+   end
+
+   self.state = state
+end
+
+function Menu:terminate()
+   self.world:delete_me(1)
+end
 
 PSManager = oo.class(oo.Object)
 function PSManager:init(n, ctor)
@@ -135,7 +244,7 @@ function Thruster:init(go, offset, spd)
    local psbox = system:def():find_component('PSBoxInitializer')
 
    self.psbox = psbox
-   self.timer = Timer()
+   self.timer = Timer(go)
    self:update()
 end
 
@@ -223,7 +332,6 @@ function Building:init(building)
    DynO.init(self, center)
 
    local go = self:go()
-   go:fixed_rotation(0)
 
    self.sprite = go:add_component('CTestDisplay', {w=width, h=height})
    self:add_collider({fixture={type='rect', w=width, h=height}})
@@ -262,6 +370,7 @@ function Building:bombed()
       end
 
       explosions:activate(go:pos(), self.width, self.height, 200)
+      score:update(0, 1)
       self:terminate()
    end
 end
@@ -459,6 +568,7 @@ function Bomb:started_colliding_with(other)
    if go then
       explosions:activate(go:pos(), 16, 16, 30)
       self:terminate()
+      play_sfx('expl')
    end
 end
 
@@ -472,9 +582,8 @@ function Player:init()
    local w = 64
    local h = w/3
    local points = {-w/2,h/2, -w/2,-h/2, w/2,h/2,  w/2,h/2, -w/2,-h/2, w/2,-h/2}
-   self.tform = game:create_object('Matrix44')
-   self.tform:identity()
-   self.mesh = go:add_component('CMesh', {mesh=solid_mesh(points,{1,1,1,1}), tform=self.tform})
+   local _art = game:atlas_entry(constant.ATLAS, 'player')
+   go:add_component('CStaticSprite', {entry=_art})
    self.coll = go:add_component('CSensor', {fixture={type='rect', w=w, h=h, density=2,
                                                      category=2}})
    self.bomb_trigger = util.rising_edge_trigger(false)
@@ -483,6 +592,10 @@ function Player:init()
    self.max_speed = 300
 
    Thruster(go, {-w/2,0}, self.min_speed)
+
+   -- reset the score counters
+   attempts = 1
+   hits = 0
 end
 
 function Player:update()
@@ -493,7 +606,6 @@ function Player:update()
    -- set rotation
    local angle = go:angle()
    local spd = vel:length()
-   self.tform:rotation(angle)
 
    -- compute lift
    local ahead = vector.new_from_angle(angle)
@@ -510,7 +622,7 @@ function Player:update()
 
    -- drag. increases as total force due to air pressure
    -- increases. decreases as you go up
-   local drag_factor = .1 * (screen_height / pos[2]) + .9 * (math.abs(vel:dot(lift_dir)) / vel:length())
+   local drag_factor = .1 * (screen_height / pos[2]) + 1.5 * (math.abs(vel:dot(lift_dir)) / vel:length())
    local drag = vel * -drag_factor
    go:apply_force(drag)
 
@@ -544,22 +656,95 @@ function Player:update()
       DynO.terminate_all(Bomb)
       DynO.terminate_all(BuildingPiece)
       DynO.terminate_all(Building)
-      terrain:reset()
+      if score.attempts == max_attempts then
+         end_game()
+      else
+         terrain:reset()
+         score:update(1, 0)
+      end
    end
 end
 
 function background()
-   czor:clear_with_color(util.rgba(0,0,15,255))
+   czor:clear_with_color(util.rgba(0,0,30,255))
 end
 
 function game_init()
+   Timer():reset(0, safe_init)
+end
+
+function classic_init()
+   player = Player()
+
+   if score then
+      score:reset()
+   else
+      score = Score()
+   end
+
+   if not explosions then
+      explosions = ExplosionManager(5)
+   end
+end
+
+function end_game()
+   player:terminate()
+
+   local menu
+   local main_menu = function()
+      menu:terminate()
+      show_main()
+   end
+   menu = Menu(main_font(3), {{'Press ENTER to continue', main_menu}})
+end
+
+function show_main()
+   local menu
+   local main_menu
+
+   local start = function()
+      menu:terminate()
+      classic_init()
+      terrain:reset()
+   end
+
+   local instructions = function()
+      menu:terminate()
+      local font = main_font(2)
+      local options = {{'Ascend and descend using the LEFT and RIGHT arrow keys.', main_menu},
+                       {'Press SPACE to drop bombs.', main_menu},
+                       {'Destroy as many buildings as possible in 5 screens.', main_menu},
+                       {'You only get 1 bomb per screen.', main_menu},
+                       {'Press enter to continue.', main_menu}}
+
+      menu = Menu(main_font(1), options)
+   end
+
+   main_menu = function()
+      if menu then
+         menu:terminate()
+      end
+      menu = Menu(main_font(3), {{'Instructions', instructions},
+                                 {'Start', start}})
+
+   end
+
+   main_menu()
+end
+
+function safe_init()
    util.install_basic_keymap()
    world:gravity({0,-45})
 
+   local expl = {'resources/expl1.ogg', 'resources/expl3.ogg'}
+   load_sfx('expl', expl)
+
+   local songs = {'resources/DST-1990.ogg'}
+   util.loop_music(util.rand_shuffle(songs))
    local cam = stage:find_component('Camera', nil)
    cam:pre_render(util.fthread(background))
 
    terrain = Terrain(50, 20)
-   player = Player()
-   explosions = ExplosionManager(5)
+
+   show_main()
 end
