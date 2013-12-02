@@ -765,7 +765,18 @@ function show_main()
                        {'You only get 1 bomb per screen.', main_menu},
                        {'Press enter to continue.', main_menu}}
 
-      menu = Menu(main_font(1), options)
+      menu = Menu(font, options)
+   end
+
+   local credits = function()
+      menu:terminate()
+      local font = main_font(2)
+      local options = {{'Music by DST.', main_menu},
+                       {'Sound created in CFXR.', main_menu},
+                       {'Art, code, concept by @netguy204.', main_menu},
+                       {'Press enter to continue.', main_menu}}
+
+      menu = Menu(font, options)
    end
 
    main_menu = function()
@@ -773,7 +784,8 @@ function show_main()
          menu:terminate()
       end
       menu = Menu(main_font(3), {{'Instructions', instructions},
-                                 {'Start', start}})
+                                 {'Start', start},
+                                 {'Credits', credits}})
 
    end
 
