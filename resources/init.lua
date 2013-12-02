@@ -136,7 +136,7 @@ function Score:update(da, dh)
    dh = dh or 0
    self.attempts = self.attempts + da
    self.hits = self.hits + dh
-   self.indicator:update('%d/%d KILLS', self.hits, self.attempts)
+   self.indicator:update('%d/%d DESTROYED', self.hits, self.attempts)
 end
 
 Menu = oo.class(oo.Object)
@@ -344,14 +344,18 @@ function Building:init(building)
    local v2 = vector.new(building[2])
    local width = (v1 - v2):length()
    local height = util.rand_between(32,128)
-
+   local w2 = width/2
+   local h2 = height/2
    local center = vector.new({0,height/2}) + (v1 + v2) *.5
 
    DynO.init(self, center)
 
    local go = self:go()
 
-   self.sprite = go:add_component('CTestDisplay', {w=width, h=height})
+   local points = {w2,h2,1,1, -w2,h2,0,1, -w2,-h2,0,0,
+                   w2,h2,1,1, -w2,-h2,0,0, w2,-h2,1,0}
+   local _art = game:atlas_entry(constant.ATLAS, 'building')
+   self.sprite = go:add_component('CMesh', {mesh=textured_mesh(points, _art)})
    self:add_collider({fixture={type='rect', w=width, h=height}})
    self.width = width
    self.height = height
@@ -364,9 +368,15 @@ function fracture_tris(c, w, h, fractures)
 
    for ii = 1,#fractures,6 do
       local p1 = bl + w * fractures[ii]   + h * fractures[ii+1]
+      local t1 = {fractures[ii], fractures[ii+1]}
+
       local p2 = bl + w * fractures[ii+2] + h * fractures[ii+3]
+      local t2 = {fractures[ii+2], fractures[ii+3]}
+
       local p3 = bl + w * fractures[ii+4] + h * fractures[ii+5]
-      table.insert(tris, {p1, p2, p3})
+      local t3 = {fractures[ii+4], fractures[ii+5]}
+
+      table.insert(tris, {p1, t1, p2, t2, p3, t3})
    end
    return tris
 end
@@ -419,11 +429,14 @@ function Tri:__sub(v)
 end
 
 BuildingPiece = oo.class(DynO)
-function BuildingPiece:init(tris)
+function BuildingPiece:init(tris_and_texs)
    local c = vector.new({0,0})
-   for ii=1,#tris do
-      tris[ii] = Tri(tris[ii])
-      c = c + tris[ii]:center()
+   local tris = {}
+   for ii=1,#tris_and_texs do
+      local tat = tris_and_texs[ii]
+      local tri = Tri(tat[1], tat[3], tat[5])
+      table.insert(tris, tri)
+      c = c + tri:center()
    end
    c = c / #tris
 
@@ -432,8 +445,11 @@ function BuildingPiece:init(tris)
    for ii=1,#tris do
       tris[ii] = tris[ii] - c
       extend(points, tris[ii][1])
+      extend(points, tris_and_texs[ii][2])
       extend(points, tris[ii][2])
+      extend(points, tris_and_texs[ii][4])
       extend(points, tris[ii][3])
+      extend(points, tris_and_texs[ii][6])
    end
 
    DynO.init(self, c)
@@ -443,7 +459,8 @@ function BuildingPiece:init(tris)
    go:fixed_rotation(0)
 
    -- visual
-   local mesh = solid_mesh(points, {1,0,1,1})
+   local _art = game:atlas_entry(constant.ATLAS, 'building')
+   local mesh = textured_mesh(points, _art)
    self.mesh = go:add_component('CMesh', {mesh=mesh})
    self.tform = game:create_object('Matrix44')
    self.tform:identity()
