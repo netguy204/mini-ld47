@@ -61,6 +61,22 @@ function solid_mesh(points, color, mesh)
    return mesh
 end
 
+function textured_mesh(points, entry, mesh)
+   if mesh then
+      mesh:clear()
+   else
+      mesh = game:create_object('Mesh')
+   end
+
+   mesh:entry(entry)
+
+   for ii = 1,#points,4 do
+      mesh:add_point_and_tcoord({points[ii], points[ii+1]}, {1,1,1,1},
+                                {points[ii+2], points[ii+3]})
+   end
+   return mesh
+end
+
 function extend(tbl, pts)
    for ii = 1,#pts do
       table.insert(tbl, pts[ii])
@@ -132,8 +148,10 @@ function Menu:init(font, options)
    local y = screen_height / 2 + font:line_height() * #options / 2
    local x = screen_width / 2
    for ii = 1,#options do
+      local bg = Indicator(font, {x-1, y-1}, {0,0,0,1}, go)
       local choice = Indicator(font, {x, y}, {0,0,0,0}, go)
       choice:update(options[ii][1])
+      bg:update(options[ii][1])
       table.insert(indicators, choice)
       y = y - font:line_height()
    end
@@ -174,7 +192,7 @@ function Menu:update()
          self.indicators[ii]:color({1,1,1,1})
       else
          local c = .4
-         self.indicators[ii]:color({c,c,c,c})
+         self.indicators[ii]:color({c,c,c,1})
       end
    end
 
@@ -532,8 +550,8 @@ function Terrain:generate(var, steps, mesh, lasty)
          end
       end
 
-      extend(mpoints, {x,y,  lastx,lasty,  lastx,0,
-                       x,y,  lastx,0,      x,0})
+      extend(mpoints, {x,y,1,1,  lastx,lasty,0,1,  lastx,0,0,0,
+                       x,y,1,1,  lastx,0,0,0,      x,0,1,0})
 
       local surface = {{x,y}, {lastx,lasty}, {lastx,0}, {x,0}}
       table.insert(surfaces, surface)
@@ -542,7 +560,8 @@ function Terrain:generate(var, steps, mesh, lasty)
       lastx = x
    end
 
-   return {mesh = solid_mesh(mpoints, {0,1,0,1}, mesh),
+   local _art = game:atlas_entry(constant.ATLAS, 'terrain')
+   return {mesh = textured_mesh(mpoints, _art, mesh),
            surfaces = surfaces,
            lasty = lasty,
            building = building}
@@ -555,7 +574,9 @@ function Bomb:init(pos, vel)
    go:vel(vel)
    go:fixed_rotation(0)
 
-   self.sprite = go:add_component('CTestDisplay', {w=16,h=16,color={1,0,0,1}})
+   local _art = game:atlas_entry(constant.ATLAS, 'bomb')
+   self.sprite = go:add_component('CStaticSprite', {entry=_art})
+   self.sprite:angle_offset(math.pi/2)
    self:add_collider({fixture={type='rect', w=16, h=16, category=3, mask=1}})
 end
 
@@ -569,6 +590,13 @@ function Bomb:started_colliding_with(other)
       explosions:activate(go:pos(), 16, 16, 30)
       self:terminate()
       play_sfx('expl')
+   end
+end
+
+function Bomb:update()
+   local go = self:go()
+   if go then
+      go:angle(vector.new(go:vel()):angle())
    end
 end
 
