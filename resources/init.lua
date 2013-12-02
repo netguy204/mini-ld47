@@ -590,6 +590,7 @@ function Player:init()
    go:vel({100,0})
    self.min_speed = 70
    self.max_speed = 300
+   self.fired = false
 
    Thruster(go, {-w/2,0}, self.min_speed)
 
@@ -627,8 +628,9 @@ function Player:update()
    go:apply_force(drag)
 
    local input = util.input_state()
-   if self.bomb_trigger(input.action1) then
+   if (not self.fired) and self.bomb_trigger(input.action1) then
       Bomb(pos, go:vel())
+      self.fired = true
    end
 
    if math.abs(input.leftright) > 0.1 then
@@ -653,6 +655,7 @@ function Player:update()
    end
 
    if reset then
+      self.fired = false
       DynO.terminate_all(Bomb)
       DynO.terminate_all(BuildingPiece)
       DynO.terminate_all(Building)
